@@ -103,9 +103,9 @@ class TestTranslation:
         } in rules
 
     def test_denied_commands_become_shell_denies(self):
-        rules = _rules({"execute_bash": {"deniedCommands": ["git push .*", "(a|b)"]}})
+        rules = _rules({"execute_bash": {"deniedCommands": ["git push .*", "(a|b)+"]}})
         assert rules == [{"capability": "shell", "match": ["git push *"], "effect": "deny"}]
-        assert _lost({"execute_bash": {"deniedCommands": ["(a|b)"]}}) == [
+        assert _lost({"execute_bash": {"deniedCommands": ["(a|b)+"]}}) == [
             "execute_bash.deniedCommands"
         ]
 

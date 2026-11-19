@@ -5166,7 +5166,8 @@ write `allowedPaths` is carried whole even when an entry of it is one Crew
 cannot read, since that entry grants nothing and the call asks. A
 `deniedCommands` list is carried whole too. When an entry of it is one neither
 KAS (a glob in the entry's `permissions`) nor the gate (`kas_spec_denies._refusable_deny`)
-can judge, such as a regex with `|` inside a group, the worker's projection
+can judge, such as a top-level `a|b` (a group alternation KAS receives one
+glob per branch, `kas_deny_alternatives`, so it is judged), the worker's projection
 records those entries under the Crew-only `_crewShellUnjudgedDenies` key
 (`kas_spec_denies.with_unjudged_denies`, set for `kirocrew-mate-worker` only),
 the session handle stamps them on its own agent's requests

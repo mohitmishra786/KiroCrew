@@ -318,8 +318,8 @@ the list, and the code admits only the row marked PROCEEDS.
 
 Because the "any other atomic rewrite" row refuses, a writer that rewrites a sealed leaf on a
 schedule must not rewrite it when nothing changed. Every agent-config rebuild writes
-`agent_model_state.json`, so `agent_state._write` skips a document whose bytes, mode and single
-link already match (`unchanged_file.already_holds`, POSIX only), and the agent-spec writer
+`agent_model_state.json`, so `agent_state._write` skips a document whose bytes, mode, owner and
+single link already match (`unchanged_file.already_holds`, POSIX only), and the agent-spec writer
 (`agent_parts/spec_files._atomic_json_write_unguarded`) does the same for `kirocrew.json`, whose
 inode the worker records in that sidecar. A rebuild that changes nothing therefore keeps every
 sealed file leaf's identity (`test/test_rebuild_keeps_pinned_files.py`); one that changes the
@@ -3597,6 +3597,22 @@ only an unmatched command (`kas_grant_only_settings.without_shell_grant_keys`, t
 reading `kas_agents._allowed_commands_withheld` gives them). The KAS deny rules the translation carries
 are unchanged.
 
+A `deniedCommands` entry with group alternation travels as one KAS deny per
+branch (`kas_deny_alternatives.deny_alternatives`): kiro-cli anchors an entry at
+both ends, so `(touch|mkdir) .*` denies exactly what `touch .*` and `mkdir .*`
+deny together, and the engine splits it the same way (`touch *, mkdir *`) when it
+reads an agent profile itself. Only a `( )` or `(?: )` group holding no group or
+class, with no repeat after it, is split, up to
+`kas_deny_alternatives.MAX_ALTERNATIVES` combinations; a top-level `a|b` (which
+the Rust anchoring reads as "starts with `a` or ends with `b`") and every other
+entry come back whole and are handled below, as before. A split entry is carried
+only when every branch has a glob and reaches the policy
+(`kas_permissions.shell_deny_carried`); then the notice does not name it, a Bot
+worker's `spec-unjudged-denies` row does not hold for it, and it counts as carried
+for `denyByDefault` and `autoAllowReadonly`, like any other carried deny. Crew's
+gate still cannot read alternation (`allowed_commands.parse_deny`), so no grant
+beside it is lifted.
+
 A `deniedCommands` entry KAS receives no rule for (no glob spelling, a redirect
 character, a merge dropped it: `kas_permissions.shell_denies_carried` is false)
 is refused by the same row with no grant beside it
@@ -3737,6 +3753,35 @@ workspace turns the built-ins into MCP tools these rows do not bind, so
 It refuses the session for its own entry only; a sub-agent registered beside it
 (`acp/kas_subagent_targets.py`) that carries either is left out of the batch and
 named in the session-start notice (`REMOTE_SUBAGENTS_RESTRICTED`).
+
+**KAS native sub-agent ceiling** — a sub-agent the KAS engine runs
+(`invoke_sub_agent`) gets its parent's ceiling or a tighter one, never a wider one,
+and every gap fails closed:
+
+- *Which agents.* Every batch entry that mounts the tool carries a `subagent` deny
+  naming `agent_files.OWNED_KIRO_AGENT_NAMES` (the stems of `OWNED_KIRO_AGENT_FILES`),
+  with or without an `availableAgents` list (`kas_subagent_targets.deny_own_agents`,
+  applied by `acp/kas_native_batch.py`). A deny only narrows. Each entry that gains
+  it records one `kas_subagent_own_agents_denied` security event (source
+  `kas_agent_projection`) naming the entry (`kas_subagent_targets.audit_subagent_policy`).
+- *Gate-only limits.* A native child's request shares the session's id and is told
+  apart by the id its `agentSubtaskId` frame recorded. `_build_permission_event`
+  stamps the session agent's LIMITS on it (`_stamp_parent_limits`): the shell and
+  write allowlists, the read-only flag beside the shell allowlist, a Bot worker's
+  unjudged denies, and the deny record with its grants emptied
+  (`spec_denied_grant.denies_only`). The `spec_granted_*` and `spec_hook_held`
+  grants stay off, so the `spec-shell-allowlist`, `spec-write-allowlist`,
+  `spec-denies` and unjudged-denies rows refuse the child as they refuse the parent,
+  and no grant row answers for it.
+- *Its tools.* The one agent Kiro Crew ships for the tool, `kirocrew-helper`
+  (`acp/kas_engine_subagent_target.py`), exists only in memory: built-in tools only,
+  no server of its own, no hooks, and every session-level server excluded whole
+  (`@server` in `excludedTools`), so it reaches no Kiro Crew tool.
+- *Its finished calls.* The session agent's spec `postToolUse` hooks fire for a
+  child's finished call (`acp/kas_child_finished.py`, see
+  [acp-client](acp-client.md)), once per call. The three surfaces that fire them
+  read the predicate through the agent-SDK boundary
+  (`agent_sdk/kas_child_finished.py`).
 
 **claude spec allowlists** — claude reads neither `toolsSettings` allowlist, so for
 a backend in `ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS` (claude only; kiro-cli

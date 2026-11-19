@@ -51,6 +51,7 @@ import logging
 from collections.abc import Callable, Iterable
 from typing import Any
 
+from kiro_crew.acp.kas_deny_alternatives import deny_alternatives
 from kiro_crew.acp.kas_hook_mcp import (  # noqa: F401 - cached_mcp_tool_names is re-exported
     APPROVED_MCP_SERVER_PREFIX,
     auto_approved_mcp_servers,
@@ -446,8 +447,8 @@ def shell_deny_carried(raw: str, globs: set[str]) -> bool:
     blank entry needs no rule."""
     if not raw.strip():
         return True
-    glob = _regex_to_glob(raw.strip())
-    return glob is not None and not set(glob) & _REDIRECT_CHARACTERS and glob in globs
+    each = [_regex_to_glob(alt) for alt in deny_alternatives(raw.strip())]
+    return all(g is not None and not set(g) & _REDIRECT_CHARACTERS and g in globs for g in each)
 
 
 def shell_denies_carried(tools_settings: Any, policy: Any) -> bool:
@@ -1704,8 +1705,9 @@ def _approved_under(policy: Any, unprompted: Iterable[str]) -> frozenset[str]:
 # The translation below follows that guide, with two limits of its own:
 #
 # * Only what can be said faithfully is translated. A kiro-cli regex becomes a
-#   glob only when it is a literal plus ``.*``; anything else is reported, never
-#   guessed at, because a guessed deny can silently stop matching.
+#   glob only when it is a literal plus ``.*`` (a deny's group alternation first
+#   split per branch, ``kas_deny_alternatives``); anything else is reported,
+#   never guessed at, because a guessed deny can silently stop matching.
 # * No ALLOW is emitted. The gap being closed is lost restrictions; an allow
 #   left behind only means the call keeps prompting, and shell/filesystem allows
 #   are a family Crew never auto-approves here (:data:`WITHHELD_CAPABILITIES`).
@@ -1842,9 +1844,10 @@ def tools_settings_to_permissions(
 
         if family == "shell":
             handled.add("deniedCommands")
-            denied = converted(
-                f"{tool}.deniedCommands", settings.get("deniedCommands"), _regex_to_glob
-            )
+            # A group alternation is split into one glob per branch, as KAS does.
+            entries = _patterns(settings.get("deniedCommands"))
+            split = [alt for raw in entries for alt in deny_alternatives(raw)]
+            denied = converted(f"{tool}.deniedCommands", split, _regex_to_glob)
             rules.extend(_chunked_rules("shell", "deny", denied))
             # kiro-cli matches the regex over the whole command line; KAS matches
             # the glob over the command's words, which do not include a redirect

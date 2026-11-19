@@ -20,6 +20,7 @@ from session_handle_helpers import bare_session_handle
 import kiro_crew.agent as agent_mod
 import kiro_crew.config.paths as paths_mod
 from kiro_crew.acp.harness.kas import KasHarness
+from kiro_crew.agent_files import OWNED_KIRO_AGENT_NAMES
 
 #: Shaped like a kiro-cli or AIM spec: ``allowedTools`` and ``toolsSettings``, no
 #: ``permissions`` block, which KAS's own loader skips as a CLI-only profile.
@@ -227,7 +228,9 @@ async def test_a_name_with_no_spec_adds_no_deny(agents_dir):
     extras = await _extras()
 
     rules = extras.custom_agents[0]["permissions"]["rules"]
-    assert not any(r.get("capability") == "subagent" and r.get("match") != ["*"] for r in rules)
+    # Beside the list's own rule, only the deny every parent carries for Kiro Crew's own agents.
+    kept = (["*"], sorted(OWNED_KIRO_AGENT_NAMES))
+    assert not any(r.get("capability") == "subagent" and r.get("match") not in kept for r in rules)
 
 
 @pytest.mark.asyncio

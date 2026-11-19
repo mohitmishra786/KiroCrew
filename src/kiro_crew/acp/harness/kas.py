@@ -62,6 +62,7 @@ from kiro_crew.acp.kas_app_identity import resolve_app_identity_launches
 from kiro_crew.acp.kas_endpoints import CLOUD_CONFIG_ENDPOINT_ENV
 from kiro_crew.acp.kas_host_auth import answer_get_access_token, vault_holds_identity_off_loop
 from kiro_crew.acp.kas_mcp_json_legacy import legacy_mcp_json
+from kiro_crew.acp.kas_native_batch import native_batch
 from kiro_crew.acp.kas_prompt import prompt_unread_notice, spec_prompt
 from kiro_crew.acp.kas_settings_mcp import (
     declared_servers,
@@ -1588,7 +1589,9 @@ class KasHarness(MembershipHarness):
             )
             # A refused target the engine could still load from disk is denied, so
             # the refusal the notice names holds.
-            custom_agents = [*deny_refused_targets(custom_agents, agent, refused), *targets]
+            custom_agents = native_batch(
+                deny_refused_targets(custom_agents, agent, refused), targets
+            )
             # Resolved HERE, in this thread, for the runtime's hoist: the managed
             # launch it stamps the session token onto comes from the ``kirocrew``
             # launcher lookup, which probes the filesystem and PATH.

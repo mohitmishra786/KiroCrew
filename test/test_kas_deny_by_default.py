@@ -573,15 +573,15 @@ def test_the_projection_drops_the_record_when_allowed_tools_names_the_shell() ->
 @pytest.mark.parametrize(
     "denied",
     [
-        [r"^git (commit|push).*$"],
-        ["rm .*", r"^git (commit|push).*$"],
+        [r"^git commit.*|git push.*$"],
+        ["rm .*", r"^git commit.*|git push.*$"],
         ["cat .* > .*"],
         "rm .*",
         [7],
     ],
 )
 def test_a_denied_command_that_does_not_travel_keeps_the_allowlist(denied: Any) -> None:
-    """A ``deniedCommands`` entry with no KAS deny rule (grouped regex, a redirect,
+    """A ``deniedCommands`` entry with no KAS deny rule (top-level alternation, a redirect,
     a malformed value) lives only in the spec. Lifting ``denyByDefault`` would let
     the command it names run, so the allowlist stays even though ``allowedTools``
     names the shell."""
