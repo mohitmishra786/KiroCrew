@@ -380,6 +380,8 @@ export default function SchedulePage() {
    * at what it was filtering.
    */
   const [detailOpen, setDetailOpen] = useState(false)
+  // The tab the detail dialog opens on: `logs` when a link asked for the run log.
+  const [detailInitialTab, setDetailInitialTab] = useState<'details' | 'logs'>('details')
   const [creating, setCreating] = useState(false)
   const [prefill, setPrefill] = useState<CronPrefill | null>(null)
   // Whether the seeded preset performs repo/issue writes (shows a notice in the create panel).
@@ -711,20 +713,22 @@ export default function SchedulePage() {
   // Open the create panel seeded from a pre-canned schedule card.
   const openPreset = useCallback((p: SchedulePreset) => { setSelected(null); setDetailOpen(false); setPrefill({ ...p.prefill, sourcePreset: p.id, sourceTemplatePrompt: presetCanonicalPrompt(p.id) }); setPrefillWrites(!!p.writes); setPrefillNonce(n => n + 1); setCreating(true) }, [])
   // Open the detail dialog on a job (row click / calendar entry click).
-  const openDetail = useCallback((job: CronJob) => { setCreating(false); setPrefill(null); setSelected(job); setDetailOpen(true) }, [])
+  const openDetail = useCallback((job: CronJob, tab: 'details' | 'logs' = 'details') => { setCreating(false); setPrefill(null); setSelected(job); setDetailInitialTab(tab); setDetailOpen(true) }, [])
   // `?job=<id>` opens that job's detail once the list has loaded, then drops the
   // param so a reload or Back does not reopen it. A Crewmate Profile's schedule
   // row links here; an id that no longer exists simply lands on the list.
+  // `&tab=logs` opens the dialog on that job's run log.
   const [searchParams, setSearchParams] = useSearchParams()
   const deepLinkJob = searchParams.get('job')
+  const deepLinkTab = searchParams.get('tab') === 'logs' ? 'logs' : 'details'
   useEffect(() => {
     // A failed list read has not answered whether the requested job exists.
     // Preserve the param so a successful retry can still resolve it.
     if (!deepLinkJob || loading || loadError) return
     const job = jobs.find((j) => j.id === deepLinkJob)
-    if (job) openDetail(job)
-    setSearchParams((prev) => { const next = new URLSearchParams(prev); next.delete('job'); return next }, { replace: true })
-  }, [deepLinkJob, loading, loadError, jobs, openDetail, setSearchParams])
+    if (job) openDetail(job, deepLinkTab)
+    setSearchParams((prev) => { const next = new URLSearchParams(prev); next.delete('job'); next.delete('tab'); return next }, { replace: true })
+  }, [deepLinkJob, deepLinkTab, loading, loadError, jobs, openDetail, setSearchParams])
   // Dismiss the dialog. `selected` survives on purpose — see its declaration.
   const closeDetail = useCallback(() => { setDetailOpen(false); setCreating(false); setPrefill(null); setPrefillWrites(false) }, [])
   // The dialog is bound to `selected` existing, so a job deleted underneath us
@@ -1333,6 +1337,7 @@ export default function SchedulePage() {
           <JobDetailDialog
             key={creating ? (prefill ? `preset#${prefillNonce}` : 'new') : selected?.id}
             job={creating ? undefined : selected || undefined}
+            initialTab={creating ? 'details' : detailInitialTab}
             prefill={creating ? prefill || undefined : undefined}
             prefillWrites={creating && !!prefill && prefillWrites}
             agents={agents}
@@ -1801,16 +1806,15 @@ function TemplateUpdatedNotice({ job }: { job: CronJob }) {
 /** `confirmed`: the server refused the save, so it was not saved. */
 type LateSaveFailure = { name: string; message: string; confirmed: boolean }
 
-function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, rosterFailure, onClose, onChanged, onDirtyChange, onLateFailure }: {
-  job?: CronJob; prefill?: CronPrefill; prefillWrites?: boolean; agents: KiroCrewAgent[]; defaultAgent: string; rosterFailure?: { reloading: boolean; onReload: () => void }; onClose: () => void; onChanged: () => void; onDirtyChange: (dirty: boolean) => void; onLateFailure: (f: LateSaveFailure) => void
+function JobDetailDialog({ job, initialTab = 'details', prefill, prefillWrites, agents, defaultAgent, rosterFailure, onClose, onChanged, onDirtyChange, onLateFailure }: {
+  job?: CronJob; initialTab?: 'details' | 'logs'; prefill?: CronPrefill; prefillWrites?: boolean; agents: KiroCrewAgent[]; defaultAgent: string; rosterFailure?: { reloading: boolean; onReload: () => void }; onClose: () => void; onChanged: () => void; onDirtyChange: (dirty: boolean) => void; onLateFailure: (f: LateSaveFailure) => void
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [saving, setSaving] = useState(false)
   const [panelError, setPanelError] = useState<string | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
-  const [detailTab, setDetailTab] = useState<'details' | 'logs'>('details')
-  useEffect(() => { setDetailTab('details') }, [job?.id])
+  const [detailTab, setDetailTab] = useState<'details' | 'logs'>(initialTab)
   const submitRef = useRef<(() => void) | null>(null)
   // Closing never cancels a request, so an answer can arrive after this dialog
   // is gone. It still refreshes the list, but only a live dialog closes: a late

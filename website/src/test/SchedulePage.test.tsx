@@ -656,6 +656,17 @@ describe('SchedulePage job detail dialog', () => {
     expect(await screen.findByDisplayValue('Linked job')).toBeInTheDocument()
   })
 
+  it('?job=<id>&tab=logs opens that job on its run log', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api).crons.mockResolvedValue({ jobs: [mkJob({ id: 'job-7', name: 'Linked job' })] })
+
+    renderWithProviders(<SchedulePage />, { route: '/schedule?job=job-7&tab=logs' })
+    const dialog = await screen.findByRole('dialog')
+    // The Logs view replaces the form, so the name field is not on screen.
+    await waitFor(() => expect(within(dialog).queryByDisplayValue('Linked job')).not.toBeInTheDocument())
+    expect(within(dialog).getByRole('button', { name: /Save/ })).toBeDisabled()
+  })
+
   it('?job=<unknown id> lands on the list with no dialog', async () => {
     const { api } = await import('../api/client')
     vi.mocked(api).crons.mockResolvedValue({ jobs: [mkJob()] })

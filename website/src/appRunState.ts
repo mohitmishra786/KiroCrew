@@ -94,7 +94,7 @@ export const SUCCESS_WINDOW_MS = 90_000
  * real, and hiding a run in progress because someone just paused the job would
  * make the indicator contradict the Schedule page.
  */
-function isHealthSignal(job: CronJob): boolean {
+export function isHealthSignal(job: CronJob): boolean {
   if (job.is_running === true) return true
   // A fired one-shot is parked with the user-pause flags. Its park is the run's,
   // not an opt-out, so its result still counts.

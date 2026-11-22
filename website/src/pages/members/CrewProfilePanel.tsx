@@ -99,7 +99,10 @@ export interface CrewProfilePanelProps {
   schedulesError?: boolean
   nowTs: number
   onOpenSchedule: () => void
-  onOpenScheduleJob: (id: string) => void
+  /** Open one job on the Schedule page; `logs` opens its run log. */
+  onOpenScheduleJob: (id: string, tab?: 'logs') => void
+  /** Turn an auto-paused job back on, for the failed-run notice's Resume. */
+  onResumeScheduleJob?: (id: string) => Promise<unknown>
   /** The schedule CREATE form (the crew editor's own pane), pushed as a page.
    *  The card is a summary with doors, never a second source of truth. */
   newScheduleBody: ReactNode
@@ -566,7 +569,7 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
                     <h3 className="text-[11px] font-semibold tracking-wide uppercase text-muted px-0.5 mt-1" data-testid="crew-schedule-heading-yours">{t('pages.membersPage.your_schedules')}</h3>
                   </>
                 )}
-                <CrewScheduleList jobs={p.schedules} loading={p.schedulesLoading} error={p.schedulesError} nowTs={p.nowTs} onOpenAll={p.onOpenSchedule} onOpenJob={p.onOpenScheduleJob} onCreate={() => push('new-schedule')} selfWaking={p.heartbeatOn || !!p.selfBody} checkInsOn={p.checkInsOn} />
+                <CrewScheduleList jobs={p.schedules} loading={p.schedulesLoading} error={p.schedulesError} nowTs={p.nowTs} onOpenAll={p.onOpenSchedule} onOpenJob={p.onOpenScheduleJob} onResumeJob={p.onResumeScheduleJob} onCreate={() => push('new-schedule')} selfWaking={p.heartbeatOn || !!p.selfBody} checkInsOn={p.checkInsOn} />
               </div>
             )}
             {tab === 'sessions' && p.sessionsBody}

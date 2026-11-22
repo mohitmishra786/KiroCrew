@@ -1,6 +1,8 @@
+import { useState } from 'react'
 import { AlarmClock, ChevronRight, ExternalLink, Plus } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { CronJob } from '../../types'
+import { isHealthSignal } from '../../appRunState'
 import { fmtDateTimeNumeric, fmtDuration } from '../../i18n/format'
 import { timeAgo } from '../../utils/timeAgo'
 import { cn } from '../../lib/utils'
@@ -32,6 +34,14 @@ function lastRunFailed(job: CronJob): boolean {
     && job.last_status !== 'pending'
 }
 
+/** Kiro Crew paused the job itself after failed runs: disabled, but not by the
+ *  user and not a fired one-shot's park. An older gateway that omits
+ *  `user_paused` reads as a plain pause. */
+function autoPaused(job: CronJob): boolean {
+  return !job.is_running && !job.enabled && job.user_paused === false
+    && job.parked_after_run !== true && (job.consecutive_failures ?? 0) > 0
+}
+
 /**
  * The profile card's Schedules tab: one readable row per schedule that wakes
  * this crewmate. Name first; when it runs under it; then the two facts a person
@@ -40,14 +50,16 @@ function lastRunFailed(job: CronJob): boolean {
  * opens that job's detail on the Schedule page (`/schedule?job=<id>`), where it
  * is edited, paused or run; the footer opens the create form.
  */
-export default function CrewScheduleList({ jobs, loading, error = false, nowTs, onOpenAll, onOpenJob, onCreate, selfWaking = false, checkInsOn = false }: {
+export default function CrewScheduleList({ jobs, loading, error = false, nowTs, onOpenAll, onOpenJob, onResumeJob, onCreate, selfWaking = false, checkInsOn = false }: {
   jobs: CronJob[]
   loading: boolean
   error?: boolean
   nowTs: number
   onOpenAll: () => void
-  /** Open one job's detail on the Schedule page. */
-  onOpenJob: (id: string) => void
+  /** Open one job's detail on the Schedule page; `logs` opens its run log. */
+  onOpenJob: (id: string, tab?: 'logs') => void
+  /** Turn an auto-paused job back on. Unset: the notice offers no Resume. */
+  onResumeJob?: (id: string) => Promise<unknown>
   onCreate: () => void
   /** The mate already wakes on its own (its Heartbeat is on, the row above
    *  this list): the empty line then says only that there are no schedules. */
@@ -59,7 +71,20 @@ export default function CrewScheduleList({ jobs, loading, error = false, nowTs, 
   const { t } = useTranslation()
   const sorted = [...jobs].sort((a, b) => (a.next_run_ts ?? Infinity) - (b.next_run_ts ?? Infinity))
   const next = sorted.find((j) => j.enabled && (j.next_run_ts ?? 0) > nowTs)
-  const hasFailedRun = sorted.some(lastRunFailed)
+  // The notice follows the app health rule (`isHealthSignal`): a job the user
+  // paused is not something to act on, but a job Kiro Crew paused after failing
+  // is the worst case, so it is named first.
+  const failing = sorted.filter((j) => lastRunFailed(j) && isHealthSignal(j))
+  failing.sort((a, b) => Number(autoPaused(b)) - Number(autoPaused(a)))
+  const firstFailed = failing[0]
+  const [resuming, setResuming] = useState(false)
+  const [resumeFailed, setResumeFailed] = useState(false)
+  const resume = (id: string) => {
+    if (!onResumeJob) return
+    setResuming(true)
+    setResumeFailed(false)
+    onResumeJob(id).catch(() => setResumeFailed(true)).finally(() => setResuming(false))
+  }
 
   return (
     <div className="flex flex-col gap-3" data-testid="crew-schedule-list">
@@ -98,7 +123,7 @@ export default function CrewScheduleList({ jobs, loading, error = false, nowTs, 
       ) : (
         <ul className="list-none m-0 p-0 rounded-2xl border border-border bg-bg overflow-hidden">
           {sorted.map((j) => {
-            const state = j.is_running ? 'running' : j.enabled ? 'on' : 'paused'
+            const state = j.is_running ? 'running' : j.enabled ? 'on' : autoPaused(j) ? 'auto-paused' : 'paused'
             const last = j.last_run_ts ? timeAgo(j.last_run_ts) : null
             const failed = lastRunFailed(j)
             return (
@@ -119,10 +144,13 @@ export default function CrewScheduleList({ jobs, loading, error = false, nowTs, 
                           state === 'running' && 'bg-accent-subtle text-accent',
                           state === 'on' && 'bg-ok-subtle text-ok-text',
                           state === 'paused' && 'bg-bg-hover text-muted',
+                          state === 'auto-paused' && 'bg-danger-subtle text-danger-text',
                         )}
                         data-testid="crew-schedule-state"
                       >
-                        {t(SCHEDULE_STATE_KEYS[state])}
+                        {state === 'auto-paused'
+                          ? t('pages.membersPage.schedule_state_auto_paused', { count: j.consecutive_failures })
+                          : t(SCHEDULE_STATE_KEYS[state])}
                       </span>
                     </span>
                     <span className="block text-[12.5px] text-text mt-0.5 truncate">{j.schedule}</span>
@@ -148,12 +176,27 @@ export default function CrewScheduleList({ jobs, loading, error = false, nowTs, 
         </ul>
       )}
 
-      {hasFailedRun && (
+      {firstFailed && (
         <ErrorNotice
-          message={t('pages.membersPage.schedule_run_failed_notice')}
+          message={failing.length > 1
+            ? t('pages.membersPage.schedule_failed_notice_more', { name: firstFailed.name, count: failing.length - 1 })
+            : t('pages.membersPage.schedule_failed_notice', { name: firstFailed.name })}
+          actions={<>
+            <button type="button" onClick={() => onOpenJob(firstFailed.id, 'logs')} data-testid="crew-schedule-open-log">
+              {t('pages.membersPage.schedule_open_run_log')}
+            </button>
+            {onResumeJob && autoPaused(firstFailed) && (
+              <button type="button" onClick={() => resume(firstFailed.id)} disabled={resuming} data-testid="crew-schedule-resume">
+                {t('pages.membersPage.schedule_resume')}
+              </button>
+            )}
+          </>}
           askAgent
           testId="crew-schedule-run-error"
         />
+      )}
+      {resumeFailed && (
+        <ErrorNotice message={t('pages.membersPage.patrol_write_failed')} testId="crew-schedule-resume-error" />
       )}
 
       <div className="flex items-center gap-2">
