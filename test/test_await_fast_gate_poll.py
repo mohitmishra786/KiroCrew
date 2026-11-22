@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import textwrap
@@ -106,6 +107,8 @@ class _Harness:
         group: str | None = None,
         cancel_fails: bool = False,
         rate_limit_reset: str | None = None,
+        check_runs: str = '{"check_runs": []}',
+        named_runs: dict[int, str] | None = None,
     ) -> None:
         self._dir = tmp_path
         # Each line of this file is one poll's `gh api ...` stdout, consumed in
@@ -134,6 +137,15 @@ class _Harness:
         rate_limit_file = tmp_path / "gh-rate-limit"
         if rate_limit_reset is not None:
             rate_limit_file.write_text(rate_limit_reset, encoding="utf-8")
+        # The commit's check-runs (default: none, so an empty listing still means
+        # no run) and the bare run reads they lead to, one file per run id
+        # (absent = the read fails).
+        check_runs_file = tmp_path / "gh-check-runs"
+        check_runs_file.write_text(check_runs, encoding="utf-8")
+        runs_dir = tmp_path / "gh-runs"
+        runs_dir.mkdir()
+        for rid, body in (named_runs or {}).items():
+            (runs_dir / str(rid)).write_text(body, encoding="utf-8")
 
         # A `gh` that pops the next scripted response for a poll's listing. The
         # last line is reused once the list is exhausted, so a poll past the
@@ -162,6 +174,8 @@ class _Harness:
                     ;;
                   *"/jobs"*) fixed {jobs_file} jobs ;;
                   *"rate_limit"*) fixed {rate_limit_file} rate_limit ;;
+                  *"/check-runs"*) fixed {check_runs_file} check-runs ;;
+                  *"/actions/runs/"*) a="$*"; id="${{a##*/actions/runs/}}"; fixed "{runs_dir}/${{id%% *}}" run ;;
                   *"head_sha="*) ;;
                   *"fast-gate.yml/runs"*) fixed {group_file} listing ;;
                   *) echo "gh: unexpected call" >&2; exit 1 ;;
@@ -657,6 +671,165 @@ class TestARunWhoseStatusLagsItsJobs:
         _h, proc = self._lagging(tmp_path, "__FAIL__")
         assert proc.returncode == 1, proc.stdout
         assert "Could not read the jobs of Fast Gate run 16" in proc.stdout
+
+
+_FG_PATH = ".github/workflows/fast-gate.yml"
+
+
+def _check_runs(*run_ids: int) -> str:
+    """The commit's check-runs: one Actions job per run id, plus a check-run posted
+    through the API that links its own page and names no run."""
+    rows = [
+        {"details_url": f"https://github.com/{_HEAD_REPO}/actions/runs/{rid}/job/{rid}0"}
+        for rid in run_ids
+    ]
+    rows.append({"details_url": "https://example.com/report/1"})
+    return json.dumps({"total_count": len(rows), "check_runs": rows})
+
+
+def _named(rid: int, path: str = _FG_PATH, **extra: object) -> str:
+    fields: dict[str, object] = {"path": path, "event": "pull_request", "head_sha": _SHA}
+    fields.update(extra)
+    return json.dumps(_run(rid, "completed", "success", **fields))
+
+
+@needs_bash
+class TestAnEmptyListingIsReadThroughTheCheckRuns:
+    """The head_sha listing can answer no runs for a commit whose runs exist, so
+    from the APPEAR budget on an empty listing is read through the commit's
+    check-runs before the barrier calls the run missing."""
+
+    def _check_run_calls(self, h: _Harness) -> list[str]:
+        return [c for c in h.calls if "/check-runs" in c]
+
+    def test_a_run_the_check_runs_name_releases_the_matrix(self, tmp_path: Path) -> None:
+        h = _Harness(
+            tmp_path,
+            [_page()],
+            tick=30,
+            check_runs=_check_runs(50, 51),
+            named_runs={50: _named(50), 51: _named(51, path=".github/workflows/ci.yml")},
+        )
+        proc = h.run(appear_budget=90, total_budget=720)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "Fast Gate passed" in proc.stdout
+        assert "https://github.com/x/actions/runs/50" in proc.stdout
+        assert h.writes() == [], h.writes()
+
+    @pytest.mark.parametrize(
+        "colliding",
+        [
+            {"head_branch": _BRANCH, "head_repository": {"full_name": "a-fork/KiroCrew"}},
+            {"head_branch": "someone/else"},
+        ],
+        ids=["fork-reusing-the-branch-name", "another-branch-on-this-head"],
+    )
+    def test_a_listing_naming_only_a_colliding_run_reads_the_check_runs(
+        self, tmp_path: Path, colliding: dict
+    ) -> None:
+        # The listing is not empty: it answers a run that shares this head and
+        # fails the identity filter, while omitting this commit's own run. For
+        # this job that is just as empty as no answer at all, so the fallback
+        # must still run -- keyed on the selector's verdict, not the listing's
+        # length.
+        h = _Harness(
+            tmp_path,
+            [_page(_run(99, "completed", "failure", **colliding))],
+            tick=30,
+            check_runs=_check_runs(50),
+            named_runs={50: _named(50)},
+        )
+        proc = h.run(appear_budget=90, total_budget=720)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "Fast Gate passed" in proc.stdout
+        assert "https://github.com/x/actions/runs/50" in proc.stdout
+        assert "No Fast Gate run found" not in proc.stdout
+
+    @pytest.mark.parametrize(
+        "named",
+        [
+            {51: _named(51, path=".github/workflows/ci.yml")},
+            {51: _named(51, event="push")},
+            {51: _named(51, head_sha="1" * 40)},
+            {51: _named(51, head_branch="someone/else")},
+        ],
+        ids=["other-workflow", "other-event", "other-head", "other-branch"],
+    )
+    def test_check_runs_naming_no_fast_gate_run_keep_the_missing_verdict(
+        self, tmp_path: Path, named: dict[int, str]
+    ) -> None:
+        h = _Harness(tmp_path, [_page()], tick=30, check_runs=_check_runs(51), named_runs=named)
+        proc = h.run(appear_budget=90, total_budget=720)
+        assert proc.returncode == 1, proc.stdout
+        assert "No Fast Gate run found" in proc.stdout
+        assert len(self._check_run_calls(h)) == 1, h.calls
+
+    @pytest.mark.parametrize("unreadable", ["run", "check-runs"])
+    def test_an_unreadable_named_run_is_unknown_never_missing(
+        self, tmp_path: Path, unreadable: str
+    ) -> None:
+        # Run 50 has no answer file, so its read fails; or the check-runs read fails.
+        check_runs = "__FAIL__" if unreadable == "check-runs" else _check_runs(50)
+        h = _Harness(tmp_path, [_page()], tick=60, check_runs=check_runs)
+        proc = h.run(appear_budget=120, total_budget=600)
+        assert proc.returncode == 1, proc.stdout
+        assert "No Fast Gate run found" not in proc.stdout
+        assert "Fast Gate listing unreadable" in proc.stdout
+        assert "check-runs read failed" in proc.stdout
+        polls = [c for c in h.calls if "head_sha=" in c]
+        assert len(polls) > 2, "the unreadable fallback must keep polling like a failed read"
+
+    def test_an_unreadable_named_run_ends_at_the_stall_budget(self, tmp_path: Path) -> None:
+        # A failed fallback read is a failed read: the STALL budget counts from the
+        # last listing read that answered, so it ends long before the TOTAL budget.
+        h = _Harness(tmp_path, [_page()], tick=60, check_runs=_check_runs(50))
+        proc = h.run(appear_budget=120, stall_budget=300, total_budget=2100)
+        assert proc.returncode == 1, proc.stdout
+        assert "Fast Gate listing unreadable" in proc.stdout
+        assert "No Fast Gate run found" not in proc.stdout
+        ended = re.search(r"Fast Gate listing unreadable after (\d+)s", proc.stdout)
+        assert ended and 300 <= int(ended.group(1)) < 2100, proc.stdout
+
+    def test_a_pending_named_run_walks_the_check_runs_once(self, tmp_path: Path) -> None:
+        # A run the check-runs name but that is still going keeps the poll
+        # under the TOTAL budget, and the listing stays empty the whole time.
+        # Walking the check-runs again on every one of those polls would spend
+        # one read per run the commit names, each time; the id is fixed for this
+        # commit, so later polls read that one run instead.
+        pending = json.dumps(
+            _run(50, "in_progress", None, path=_FG_PATH, event="pull_request", head_sha=_SHA)
+        )
+        h = _Harness(
+            tmp_path, [_page()], tick=60, check_runs=_check_runs(50), named_runs={50: pending}
+        )
+        proc = h.run(appear_budget=120, total_budget=600)
+        assert proc.returncode == 1, proc.stdout
+        assert "No Fast Gate run found" not in proc.stdout
+        assert len(self._check_run_calls(h)) == 1, h.calls
+        run_reads = [c for c in h.calls if "/actions/runs/50" in c and "/jobs" not in c]
+        assert len(run_reads) >= 3, h.calls
+
+    def test_no_check_runs_read_before_the_appear_budget(self, tmp_path: Path) -> None:
+        # Polls at elapsed 30 and 60 only retry; the poll at 90 reads the check-runs
+        # once, and finds nothing, which is the verdict.
+        h = _Harness(tmp_path, [_page()], tick=30)
+        proc = h.run(appear_budget=90, total_budget=720)
+        assert proc.returncode == 1, proc.stdout
+        assert "No Fast Gate run found" in proc.stdout
+        polls = [i for i, c in enumerate(h.calls) if "head_sha=" in c]
+        reads = [i for i, c in enumerate(h.calls) if "/check-runs" in c]
+        assert len(polls) == 3 and len(reads) == 1, h.calls
+        assert reads[0] > polls[-1], h.calls
+
+    def test_a_listed_run_past_the_appear_budget_reads_no_check_runs(self, tmp_path: Path) -> None:
+        h = _Harness(
+            tmp_path,
+            [_page(_run(12, "in_progress", None)), _page(_run(12, "completed", "success"))],
+            tick=100,
+        )
+        proc = h.run(appear_budget=90, total_budget=720)
+        assert proc.returncode == 0, proc.stdout
+        assert self._check_run_calls(h) == [], h.calls
 
 
 # Shaped on a real eviction: the gate run for this commit waited in Fast Gate's
